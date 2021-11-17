@@ -1,16 +1,181 @@
-from CNN.common import im2col, col2im, calcOutputDim
+from common.common import im2col, col2im, clip_grads
+from common import optimizer
+
 import numpy as np
 
-# CNN 폴더 필요
+class Recurrent:
+    def __init__(self, Wx, Wh, b, opt, lr):
+        self.params = [Wx, Wh, b]
+        self.grads = [np.zeros_like(Wx, dtype=np.float64), np.zeros_like(Wh, dtype=np.float64), np.zeros_like(b, dtype=np.float64)]
+        self.cache = None # 역전파 계산시 사용할 중간 데이터
+
+        self.lr = lr
+
+        if opt == 'Momentum':
+            self.optimizer = optimizer.Momentum(self.lr)
+
+        elif opt == "AdaGrad":
+            self.optimizer = optimizer.AdaGrad(self.lr)
+
+        elif opt == "RMSProp":
+            self.optimizer = optimizer.RMSProp(self.lr)
+
+        elif opt == "Adam":
+            self.optimizer = optimizer.Adam(self.lr)
+
+        else: # SGD
+            self.optimizer = optimizer.SGD(self.lr)
+
+    def forward(self, x, h_prev):
+        Wx, Wh, b = self.params
+        # print(h_prev.shape, Wh.shape)
+        # print(x.shape, Wx.shape)
+
+        t = np.matmul(h_prev, Wh) + np.matmul(x, Wx) + b
+        h_next = np.tanh(t) # activation
+
+        self.cache = (x, h_prev, h_next)
+        return h_next
+
+    def backward(self, dt):
+        Wx, Wh, b = self.params
+        dWx, dWh, db = self.grads
+        x, h_prev, h_next = self.cache
+
+        dt = dt * (1-h_next ** 2)
+
+        dx = np.matmul(dt, Wx.T)
+        dWx = np.matmul(x.T, dt)
+
+        # 여기 H*H 형태 확인
+        dh_prev = np.matmul(dt, Wh.T)
+        dWh = np.matmul(h_prev.T, dt)
+
+        db = np.sum(dt, axis=0)
+
+        self.grads = [dWx, dWh, db]
+        self.grads = clip_grads(self.grads, 1.0)
+
+        self.params = self.optimizer.update(self.params, self.grads)
+
+        return dx, dh_prev
+
+class LSTM:
+    def __init__(self, Wx, Wh, b, opt, lr):
+        self.params = [Wx, Wh, b]
+        self.grads = [np.zeros_like(Wx, dtype=np.float64), np.zeros_like(Wh, dtype=np.float64), np.zeros_like(b, dtype=np.float64)]
+        self.cache = None
+
+        self.lr = lr
+
+        if opt == 'Momentum':
+            self.optimizer = optimizer.Momentum(self.lr)
+
+        elif opt == 'AdaGrad':
+            self.optimizer = optimizer.AdaGrad(self.lr)
+
+        elif opt == 'RMSProp':
+            self.optimizer = optimizer.RMSProp(self.lr)
+
+        elif opt == "Adam":
+            self.optimizer = optimizer.Adam(self.lr)
+
+        else: # SGD
+            self.optimizer = optimizer.SGD(self.lr)
+
+    def forward(self, x, h_prev, c_prev):
+        Wx, Wh, b = self.params
+        H = int(Wx.shape[1]/4)
+
+        # A = np.matmul(x, Wx) + np.matmul(h_prev, Wh) + b
+        A = np.dot(x, Wx) + np.dot(h_prev, Wh) + b
+        # slice
+        f = A[:, :H]
+        g = A[:, H:2*H]
+        i = A[:, 2*H:3*H]
+        o = A[:, 3*H:]
+
+        f = sigmoid(f)
+        g = np.tanh(g)
+        i = sigmoid(i)
+        o = sigmoid(o)
+
+        # print(f.shape, c_prev.shape, g.shape, i.shape)
+        c_next = f * c_prev + g * i
+        h_next = o * np.tanh(c_next)
+
+        self.cache = (x, h_prev, c_prev, i, f, g, o, c_next)
+        return h_next, c_next
+
+    def backward(self, dh_next, dc_next):
+        Wx, Wh, b = self.params
+        x, h_prev, c_prev, i, f, g, o, c_next = self.cache
+
+        # 구해야 할 것
+        # dx, dh_prev, dc_prev, di, df, dg, do
+        # dWx, dWh, db
+        tanh_c_next = np.tanh(c_next)
+
+        ds = dc_next + (dh_next * o) * (1 - tanh_c_next ** 2)
+        # dc_next = (o * dh_next) * (1 - tanh_c_next**2)
+        dc_prev = ds * f
+
+        do = tanh_c_next * dh_next
+        dg = ds * i
+        di = ds * g
+        df = ds * c_prev
+
+        # f, i, o : sigmoid
+        # g : tanh
+        df = f * (1 - f) * df
+        di = i * (1 - i) * di
+        dg = (1 - g ** 2) * dg
+        do = o * (1 - o) * do
+
+        dA = np.hstack((df, dg, di, do))
+
+        # print(dA.shape, x.shape, Wh.shape, h_prev.shape)
+
+        # dx = np.matmul(dA, Wx.T)
+        # dWx = np.matmul(x.T, dA)
+        # dh_prev = np.matmul(dA, Wh.T)
+        # dWh = np.matmul(h_prev.T, dA)
+
+        dx = np.dot(dA, Wx.T)
+        dWx = np.dot(x.T, dA)
+        dh_prev = np.dot(dA, Wh.T)
+        dWh = np.dot(h_prev.T, dA)
+
+        db = np.sum(dA, axis=0)
+
+        self.grads = [dWx, dWh, db]
+        self.grads = clip_grads(self.grads, 1.0) # 기울기 폭발 threshold 지정 가능
+
+        self.params = self.optimizer.update(self.params, self.grads)
+
+        return dx, dh_prev, dc_prev
 
 class Convolution:
-    def __init__(self, W, lr, stride=1, pad=0):
-        # N = 1 / N ** 0.5
-        # self.W = np.random.uniform(-N, N, f_shape)
-        # self.W = np.random.randn(f_shape[0], f_shape[1], f_shape[2], f_shape[3])
-        self.W = W
-        # self.b = self.b
+    def __init__(self, W, b, lr, opt="SGD", stride=1, pad=0):
+        self.params = [W, b]
+        self.grads = [np.zeros_like(W), np.zeros_like(b)]
         self.lr = lr
+
+        if opt == 'Momentum':
+            self.optimizer = optimizer.Momentum(self.lr)
+
+        elif opt == 'AdaGrad':
+            self.optimizer = optimizer.AdaGrad(self.lr)
+
+        elif opt == 'RMSProp':
+            self.optimizer = optimizer.RMSProp(self.lr)
+
+        elif opt == "Adam":
+            self.optimizer = optimizer.Adam(self.lr)
+
+        else:  # SGD
+            self.optimizer = optimizer.SGD(self.lr)
+
         self.stride = stride
         self.pad = pad
 
@@ -20,25 +185,23 @@ class Convolution:
         self.col = None
         self.col_W = None
 
-        # 가중치와 편향 매개변수의 기울기
-        self.dW = None
-        # self.db = None
-
     def forward(self, x):
-        FN, C, FH, FW = self.W.shape
-        N, C, H, W = x.shape
+        W, b = self.params
+
+        N, C, XH, XW = x.shape
+        FN, C, FH, FW = W.shape
 
         # Output layer 크기 계산
-        out_h = 1 + int((H + 2 * self.pad - FH) / self.stride)
-        out_w = 1 + int((W + 2 * self.pad - FW) / self.stride)
+        out_h = 1 + int((XH + 2 * self.pad - FH) / self.stride)
+        out_w = 1 + int((XW + 2 * self.pad - FW) / self.stride)
 
         # 4D to 2D
         # col: input data 2D / col_W: Weight data 2D
         col = im2col(x, FH, FW, self.stride, self.pad)
-        col_W = self.W.reshape(FN, -1).T
+        col_W = W.reshape(FN, -1).T
 
-        # calculate (bias는 사용하지 않음)
-        out = np.dot(col, col_W)  # + self.b
+        # calculate
+        out = np.dot(col, col_W)  + b
         out = out.reshape(N, out_h, out_w, -1).transpose(0, 3, 1, 2) # 기존 input data에 맞추어 reshape&transpose
 
         self.x = x
@@ -50,17 +213,21 @@ class Convolution:
 
     # dout: 이전 레이어에서 전달되어 온 gradient값
     def backward(self, dout):
-        FN, C, FH, FW = self.W.shape
+        W, b = self.params
+        dW, db = self.grads
+
+        FN, C, FH, FW = W.shape
         # gradient 값을 4D에서 2D로 변환
         dout = dout.transpose(0, 2, 3, 1).reshape(-1, FN)
 
         # bias
-        # self.db = np.sum(dout, axis=0)
+        db = np.sum(dout, axis=0)
 
         col = np.where(self.col > 0, 1, 0) # inv_relu(x)
+
         # dW = dout * inv_relu(x)
-        self.dW = np.dot(col.T, dout)
-        self.dW = self.dW.transpose(1, 0).reshape(FN, C, FH, FW)
+        dW = np.dot(col.T, dout)
+        dW = dW.transpose(1, 0).reshape(FN, C, FH, FW)
 
         # dx: 다음 레이어로 전달할 gradient값
         # dx = dout * weight
@@ -68,8 +235,10 @@ class Convolution:
         dx = col2im(dcol, self.x.shape, FH, FW, self.stride, self.pad)
 
         # update weight & gradient
-        self.W = self.W - self.dW * self.lr
-        # self.b = self.b - self.db * self.lr
+        self.params = [W, b]
+        self.grads = [dW, db]
+
+        self.params = self.optimizer.update(self.params, self.grads)
 
         return dx
 
@@ -126,7 +295,6 @@ class maxPooling:
 
         return dx
 
-
 class meanPooling:
     def __init__(self, p_shape, stride=1, pad=0):
         self.PH = p_shape[0]
@@ -169,35 +337,59 @@ class meanPooling:
 
         return dx
 
-
 class Affine:
-    def __init__(self, W, lr):
-        # N = 1 / N ** 0.5
-        # self.W = np.random.uniform(-N, N, f_shape)
-        # self.W = np.random.randn(f_shape[0], f_shape[1])
-        self.W = W
+    def __init__(self, W, b, lr, opt):
+        # 에러 확인을 위해 opt="SGD" 제거
+        # To Do: 구현 다되면 optimzier 기본 세팅 추가
+        self.params = [W, b]
+        self.grads = [np.zeros_like(W), np.zeros_like(b)]
         self.lr = lr
 
+        if opt == "Momentum":
+            self.optimizer = optimizer.Momentum(self.lr)
+
+        elif opt == "AdaGrad":
+            self.optimizer = optimizer.AdaGrad(self.lr)
+
+        elif opt == "RMSProp":
+            self.optimizer = optimizer.RMSProp(self.lr)
+
+        elif opt == "Adam":
+            self.optimizer = optimizer.Adam(self.lr)
+
+        else:  # SGD
+            self.optimizer = optimizer.SGD(self.lr)
+
+
         self.x = None
-        self.dW = None
         self.original_shape = None
 
     def forward(self, x):
+        W, b = self.params
+
         self.original_shape = x.shape
 
         # Convolution -> Fully Connected 변환을 위해 Flatten
         self.x = x.reshape(x.shape[0], -1)
 
-        out = np.dot(self.x, self.W)
+        out = np.dot(self.x, W) + b
 
         return out
 
     def backward(self, dout):
-        batch_size = self.x.shape[0]
-        dx = np.dot(dout, self.W.T) #/ batch_size
-        self.dW = np.dot(self.x.T, dout) #/ batch_size
+        W, b = self.params
+        dW, db = self.grads
 
-        self.W = self.W - self.dW * self.lr
+        batch_size = self.x.shape[0]
+        dx = np.dot(dout, W.T) #/ batch_size
+        dW = np.dot(self.x.T, dout) #/ batch_size
+        db = np.sum(dout, axis=0)
+
+        self.params = [W, b]
+        self.grads = [dW, db]
+
+        self.grads = clip_grads(self.grads, 100)
+        self.params = self.optimizer.update(self.params, self.grads)
 
         return dx.reshape(self.original_shape)
 
@@ -236,15 +428,45 @@ class ReLU:
         # gradient = inverse_A(X) + W * 이전 레이어에서 온 gradient
         return np.where(self.x > 0, 1, 0) * dout
 
+class tanh:
+    def __init__(self):
+        self.x = None
+        self.out = None
+
+    def forward(self, x):
+        self.x = x
+        self.out = np.tanh(x)
+
+        return self.out
+
+    def backward(self, dout):
+        return (1-self.out ** 2)*dout
+
+class Dropout:
+    def __init__(self, dropout_ratio=0.5):
+        self.dropout_ratio = dropout_ratio
+        self.mask = None
+
+    def forward(self, x, train_flg=True):
+        if train_flg:
+            self.mask = np.random.nrandn(*x.shape) > self.dropout_ratio
+            return x * self.mask
+        else:
+            return x * (1.0 - self.dropout_ratio)
+
+    def backward(self, dout):
+        return dout * self.mask
 
 def softmax(x):
     x = np.subtract(x, np.max(x, axis=1)[:, None])
     exp_x = np.exp(x)
     return exp_x / np.sum(exp_x, axis=1)[:, None]
 
-
 def cross_entropy_error(y, t):
     # delta = 1e-7
     # return -np.sum(t * np.log(y + delta))
     batch_size = y.shape[0]
     return -np.sum(t * np.log(y + 1e-7)) / batch_size
+
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
