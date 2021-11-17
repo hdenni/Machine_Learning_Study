@@ -2,6 +2,7 @@
 #include <Eigen/Dense>
 #include <random>
 
+
 using namespace std;
 using namespace Eigen;
 
@@ -29,19 +30,19 @@ int main() {
 		}
 		input[c] = temp;
 	}
-	
+
 	cout << "INPUT" << endl;
 	cout << input[0] << endl << endl;
 	cout << input[1] << endl << endl;
 	cout << input[2] << endl << endl;
-	
+
 
 	// set weight
 	int FN = 2; // Filter number
 	int FW = 2, FH = 2;
 
 	// memory allocation
-	MatrixXd** weight = new MatrixXd* [FN];
+	MatrixXd** weight = new MatrixXd * [FN];
 	for (int i = 0; i < FN; i++) {
 		weight[i] = new MatrixXd[C];
 		for (int j = 0; j < C; j++) {
@@ -49,8 +50,9 @@ int main() {
 			weight[i][j] = temp2;
 		}
 	}
-	
+
 	// weight 할당
+	/*
 	weight[0][0] << 1, 2, 0, 1;
 	weight[0][1] << 2, 0, -1, 1;
 	weight[0][2] << 0, 2, 1, -1;
@@ -58,9 +60,9 @@ int main() {
 	weight[1][0] << 0, 1, 0, -1;
 	weight[1][1] << 1, 0.5, -0.2, 0.3;
 	weight[1][2] << 0, 2, -3, 1;
-	 
-	// 정규분포를 활용한 초기화
-	/*
+	 */
+
+	 // 정규분포를 활용한 초기화
 	for (int i = 0; i < FN; i++) {
 		for (int c = 0; c < C; c++) {
 			for (int y = 0; y < FH; y++) {
@@ -70,7 +72,6 @@ int main() {
 			}
 		}
 	}
-	*/
 
 	MatrixXd* test = convolution(input, weight, FN, C, 1, 0);
 	cout << "Convolution Result" << endl;
@@ -83,7 +84,7 @@ int main() {
 	for (int i = 0; i < FN; i++) {
 		cout << test2[i] << endl << endl;
 	}
-	
+
 	delete test;
 	delete test2;
 
@@ -103,23 +104,31 @@ MatrixXd* convolution(MatrixXd* input, MatrixXd** weight, int FN, int C, int str
 	MatrixXd col = im2col(input, C, OH, OW, FH, FW);
 	MatrixXd* col_w = new MatrixXd[FN];
 
+	// 필터 전개
+	// 4D(FN, C, FH, FW) to 2D(FN, C*FH*FW)
 	for (int w = 0; w < FN; w++) {
-		VectorXd temp(FH * FW * C);
-		for (int c = 0; c < C; c++) {
-			VectorXd v = slice_flatten(weight[w][c], 0, 0, FH, FW);
-			for (int i = 0; i < FH * FW; i++)
-				temp(c*FH*FW+i) = v(i);
-		}
-		col_w[w] = temp.matrix();
-	}
 	
+		VectorXd temp(FH * FW * C);
+
+		// 3D(C, FH, FW) to 1D(C*FH*FW)
+		for (int c = 0; c < C; c++) {
+			// 1D weight(FH*FW) vector를 가로로 concat -> output: Vector(1D)
+			VectorXd v = slice_flatten(weight[w][c], 0, 0, FH, FW); // Matrix(FH, FW) -> Vector(FH*FW)
+			for (int i = 0; i < FH * FW; i++)
+				temp(c * FH * FW + i) = v(i);
+		}
+		// 하나의 Filter(FN)마다 한개의 row
+		col_w[w] = temp.matrix();
+	} // -> output: 2D Matrix
+
+
+	// Convolution 연산 + reshape
 	MatrixXd* output = new MatrixXd[FN];
 	for (int i = 0; i < FN; i++) {
 		MatrixXd temp(OH, OW);
 		output[i] = temp;
 
 		MatrixXd result = col * col_w[i];
-		// reshape
 
 		for (int y = 0; y < OH; y++) {
 			for (int x = 0; x < OW; x++) {
@@ -150,7 +159,7 @@ MatrixXd* pooling(MatrixXd* X, int n, int PH, int PW, int stride, int padding) {
 				for (int t = 0; t < m.size(); t++) {
 					if (max < m(t)) max = m(t);
 				}
-				temp((int)(y/PH), (int)(x/PW)) = max;
+				temp((int)(y / PH), (int)(x / PW)) = max;
 			}
 		}
 		output[i] = temp;
@@ -159,7 +168,7 @@ MatrixXd* pooling(MatrixXd* X, int n, int PH, int PW, int stride, int padding) {
 	return output;
 }
 
-// return 2D
+// 3D to 2D
 MatrixXd im2col(MatrixXd* X, int C, int OH, int OW, int FH, int FW) {
 	MatrixXd output(OH * OW, FH * FW * C);
 	int cnt = 0;
@@ -167,15 +176,14 @@ MatrixXd im2col(MatrixXd* X, int C, int OH, int OW, int FH, int FW) {
 	for (int y = 0; y < OH; y++) {
 		for (int x = 0; x < OW; x++) {
 			VectorXd* vec = new VectorXd[C];
-			for (int c = 0; c < C; c++) 
+			for (int c = 0; c < C; c++)
 				vec[c] = slice_flatten(X[c], y, x, FH, FW);
 
 			int r = vec[0].rows();
 			VectorXd v(r * C);
-			for (int i = 0; i < r*C; i++){
-				v(i) = vec[int(i / r)](i % r);
+			for (int i = 0; i < r * C; i++) {
+				v(i) = vec[int(i / r)](i% r);
 			}
-			//cout << v.matrix().transpose() << endl;
 
 			output.row(cnt++) = v;
 		}
